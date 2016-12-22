@@ -1,0 +1,157 @@
+import org.apache.tools.ant.taskdefs.condition.Os
+
+apply plugin: 'com.android.library'
+
+repositories {
+    flatDir {
+        dirs 'src/main/libs'
+    }
+    // For GVR components, the official source of the .aars is the Google
+    // repository.
+    maven {
+        url "http://google.bintray.com/googlevr"
+    }
+}
+
+android {
+    compileSdkVersion 21
+    buildToolsVersion '24.0.3'
+
+    defaultConfig {
+        minSdkVersion 19
+        targetSdkVersion 21
+        ndk {
+            File curDir = file('./')
+            curDir = file(curDir.absolutePath)
+            String libsDir = curDir.absolutePath +
+                    '/build/intermediates/exploded-aar/Framework/framework/unspecified/jni/armeabi-v7a/'
+
+            moduleName = "gvrf-daydream"
+            abiFilter "armeabi-v7a"
+            cFlags "-fexceptions -std=c++11 " + " -I" + curDir.absolutePath + "/." +
+                    "./framework/src/main/jni/ "
+            cFlags += "-I" + curDir.absolutePath + "/src/main/jni"
+            cFlags += "-I" + curDir.absolutePath + '/../framework/src/main/jni/util '
+            cFlags += "-I" + curDir.absolutePath + '/../framework/src/main/jni/contrib '
+
+            stl "gnustl_shared"
+            ldLibs curDir.absolutePath + "/src/main/jniLibs/armeabi-v7a/libgvr.so"
+
+            ldLibs "log"
+            ldLibs "android"
+            ldLibs "GLESv2"
+            ldLibs libsDir + "libgvrf.so"
+        }
+    }
+
+    task buildNative(type: Exec) {
+        def ndkbuild = ""
+        if (rootProject.hasProperty("ANDROID_NDK_HOME")) {
+            ndkbuild = rootProject.property("ANDROID_NDK_HOME")
+            ndkbuild += '/'
+        }
+        if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+            ndkbuild += 'ndk-build.cmd'
+        } else {
+            ndkbuild += 'ndk-build'
+        }
+
+        commandLine ndkbuild,
+                '-C', file('src/main').absolutePath, '-j', Runtime.runtime.availableProcessors()
+        //, 'NDK_DEBUG=1'
+    }
+
+    buildTypes {
+        debug {
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-project.txt'
+        }
+        releaseToGitHub {
+        }
+    }
+
+    task uploadToGitHub(type: Exec) {
+        onlyIf {
+            System.env['ACCESS_TOKEN'] != null
+        }
+
+        commandLine '../../tools/upload_to_github', file('build/outputs/aar/backend_daydream-debug.aar').absolutePath
+    }
+    uploadToGitHub.doFirst {
+        println('uploading to github')
+    }
+    task deleteAllFromGitHub(type: Exec) {
+        onlyIf {
+            System.env['ACCESS_TOKEN'] != null
+        }
+
+        commandLine '../../tools/delete_all_from_github'
+    }
+    deleteAllFromGitHub.doFirst {
+        println('deleting all assets from github release')
+    }
+
+    packagingOptions {
+        exclude 'lib/armeabi-v7a/libgvr.so'
+    }
+}
+
+project.ext.jomlVersion = "1.9.1-SNAPSHOT"
+
+dependencies {
+    compile fileTree(include: ['*.jar'], dir: 'libs')
+    compile fileTree(include: ['*.jar'], dir: 'src/main/libs')
+    compile 'com.google.vr:sdk-base:1.10.0'
+    compile project(':framework')
+    compile "org.joml:joml-android:${jomlVersion}"
+}
+
+task copyAARFiles(type: Copy) {
+    if (rootProject.hasProperty("LIBS_DIRECTORY")) {
+        println "copying aar files to the libs_directory"
+        def libsdirPath = projectDir.absolutePath + '/../../../' +
+                rootProject.property("LIBS_DIRECTORY")
+        def libsDir = new File(libsdirPath);
+        if (libsDir.exists()) {
+            from 'build/outputs/aar'
+            into libsDir
+            include 'backend_daydream-debug.aar'
+        } else {
+            println "Cannot copy aar files, libs directory does not exist!"
+        }
+    }
+}
+
+tasks.whenTaskAdded { task ->
+    if (task.name == 'bundleDebug') {
+        task<< {
+            tasks.copyAARFiles.execute()
+
+            def testsLibs = "../../../../GearVRf-Tests/gearvrf-libs/"
+            if (file(testsLibs).exists()) {
+                copy {
+                    from 'build/outputs/aar'
+                    into testsLibs
+                    include '*-debug.aar'
+                }
+            }
+
+            def gearvrfLibs = project.rootDir.absolutePath + "/../gearvrf-libs"
+            if (!file(gearvrfLibs).exists()) {
+                file(gearvrfLibs).mkdir();
+            }
+            copy {
+                from 'build/outputs/aar'
+                into gearvrfLibs
+                include '*-debug.aar'
+            }
+
+            if (System.env['ACCESS_TOKEN'] != null) {
+                deleteAllFromGitHub.execute();
+                uploadToGitHub.execute();
+            }
+        }
+    }
+}
